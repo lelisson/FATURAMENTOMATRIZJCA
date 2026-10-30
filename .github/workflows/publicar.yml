@@ -1,0 +1,93 @@
+name: Publicar dados do painel
+
+on:
+  schedule:
+    # Reserva: o GitHub atrasa/pula agendamentos por horas; quem garante os 20 min é a corrente no fim do job.
+    # Fora dos minutos :00/:30, quando o GitHub mais atrasa ou descarta execuções agendadas.
+    - cron: "9,29,49 * * * *"
+  workflow_dispatch:
+    inputs:
+      reprocessar:
+        description: "Consultar de novo também os meses fechados"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: publicar-dados
+  cancel-in-progress: false
+
+jobs:
+  publicar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      TZ: America/Sao_Paulo
+      DEFAULT_INICIO: "2026-07-01"
+      OMIE_EMPRESA: JCA Matriz
+      # tempo máximo de ConsultarPedido a cada execução; o restante fica para as próximas
+      PEDIDOS_MAX_SEG: "600"
+      # meses fechados (após o dia 1 às 23:59) ficam congelados; domingo revalida; botão manual também
+      REPROCESSAR: ${{ inputs.reprocessar }}
+      OMIE_MATRIZ_APP_KEY: ${{ secrets.OMIE_MATRIZ_APP_KEY }}
+      OMIE_MATRIZ_APP_SECRET: ${{ secrets.OMIE_MATRIZ_APP_SECRET }}
+      PAINEL_DATA_KEY: ${{ secrets.PAINEL_DATA_KEY }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - run: echo "INICIO=$(date +%s)" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install httpx python-dotenv cryptography
+
+      # consumidor_final de cada pedido (ConsultarPedido); sem o cache a Omie bloqueia por excesso de chamadas
+      - uses: actions/cache/restore@v4
+        with:
+          path: backend/data/cache_pedidos_matriz.json
+          key: pedidos-${{ github.run_id }}
+          restore-keys: pedidos-
+
+      # meses fechados já consultados (cifrados com PAINEL_DATA_KEY)
+      - uses: actions/cache/restore@v4
+        with:
+          path: backend/data/cache_congelado_matriz.enc
+          key: congelado-${{ github.run_id }}
+          restore-keys: congelado-
+
+      - run: python scripts/publicar_dados.py
+
+      - uses: actions/cache/save@v4
+        if: always() && hashFiles('backend/data/cache_pedidos_matriz.json') != ''
+        with:
+          path: backend/data/cache_pedidos_matriz.json
+          key: pedidos-${{ github.run_id }}
+
+      - uses: actions/cache/save@v4
+        if: always() && hashFiles('backend/data/cache_congelado_matriz.enc') != ''
+        with:
+          path: backend/data/cache_congelado_matriz.enc
+          key: congelado-${{ github.run_id }}
+
+      # Próxima execução 20 min após o início desta. Cancelar uma execução manualmente interrompe a corrente
+      # (o cron acima a retoma); a concorrência mantém no máximo uma rodando e uma na fila.
+      - name: Agendar próxima atualização (20 min)
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # visita o painel no Streamlit (evita suspensão) uma vez a cada 2 h: hora par, primeiros 20 min
+          if [ $(( $(date -d "@$INICIO" +%-H) % 2 )) -eq 0 ] && [ "$(date -d "@$INICIO" +%-M)" -lt 20 ]; then
+            gh workflow run manter-ativo.yml --repo "$GITHUB_REPOSITORY" --ref main || true
+          fi
+          espera=$(( INICIO + 1200 - $(date +%s) ))
+          if [ "$espera" -gt 0 ]; then sleep "$espera"; fi
+          gh workflow run publicar.yml --repo "$GITHUB_REPOSITORY" --ref main
