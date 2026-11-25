@@ -1,9 +1,9 @@
 name: Manter painel ativo
 
 on:
-  # Reserva; o disparo principal vem do workflow de publicação a cada ~2 h (o agendamento do GitHub atrasa).
+  # Limite ToS: no máximo 1×/dia. Preferir UptimeRobot fora do Actions.
   schedule:
-    - cron: "41 */3 * * *"
+    - cron: "45 14 * * *"
   workflow_dispatch:
 
 permissions:

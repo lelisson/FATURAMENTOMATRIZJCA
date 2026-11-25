@@ -2,9 +2,8 @@ name: Publicar dados do painel
 
 on:
   schedule:
-    # Reserva: o GitHub atrasa/pula agendamentos por horas; quem garante os 20 min é a corrente no fim do job.
-    # Fora dos minutos :00/:30, quando o GitHub mais atrasa ou descarta execuções agendadas.
-    - cron: "9,29,49 * * * *"
+    # Limite ToS (igual Filial/limites_github.py): ≥ 6 h; SEM auto-chain.
+    - cron: "23 1,7,13,19 * * *"
   workflow_dispatch:
     inputs:
       reprocessar:
@@ -14,7 +13,6 @@ on:
 
 permissions:
   contents: write
-  actions: write
 
 concurrency:
   group: publicar-dados
@@ -40,8 +38,6 @@ jobs:
       FIN_JCA_CACHE_KEY: ${{ secrets.PAINEL_DATA_KEY }}
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - run: echo "INICIO=$(date +%s)" >> "$GITHUB_ENV"
-
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
@@ -92,18 +88,3 @@ jobs:
         with:
           path: data/cache_meses.enc
           key: financeiro-${{ github.run_id }}
-
-      # Próxima execução 20 min após o início desta. Cancelar uma execução manualmente interrompe a corrente
-      # (o cron acima a retoma); a concorrência mantém no máximo uma rodando e uma na fila.
-      - name: Agendar próxima atualização (20 min)
-        if: ${{ !cancelled() }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # visita o painel no Streamlit (evita suspensão) uma vez a cada 2 h: hora par, primeiros 20 min
-          if [ $(( $(date -d "@$INICIO" +%-H) % 2 )) -eq 0 ] && [ "$(date -d "@$INICIO" +%-M)" -lt 20 ]; then
-            gh workflow run manter-ativo.yml --repo "$GITHUB_REPOSITORY" --ref main || true
-          fi
-          espera=$(( INICIO + 1200 - $(date +%s) ))
-          if [ "$espera" -gt 0 ]; then sleep "$espera"; fi
-          gh workflow run publicar.yml --repo "$GITHUB_REPOSITORY" --ref main
